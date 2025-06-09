@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Chatbot with Voice</title>
+    <style>
+        /* ... (keep previous styles) ... */
+        .status {
+            margin-top: 10px;
+            font-size: 0.9em;
+            color: #666;
+        }
+        .thinking {
+            color: #4285f4;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <h1>LLM Chatbot with Voice</h1>
+        
+        <div class="chat-messages" id="chat-messages"></div>
+        
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="Type your message here...">
+            <button id="send-button">Send</button>
+        </div>
+        
+        <div class="audio-controls">
+            <button id="record-button">🎤 Start Recording</button>
+            <button id="stop-button" disabled>Stop</button>
+            <div class="audio-visualizer" id="visualizer"></div>
+        </div>
+        
+        <div id="status" class="status"></div>
+        <audio id="audio-response" controls style="width: 100%; margin-top: 10px;"></audio>
+    </div>
+
+    <script>
+        // Configuration
+        const API_BASE_URL = 'http://localhost:5000/api';
+        
+        // DOM elements
+        const chatMessages = document.getElementById('chat-messages');
+        const userInput = document.getElementById('user-input');
+        const sendButton = document.getElementById('send-button');
+        const recordButton = document.getElementById('record-button');
+        const stopButton = document.getElementById('stop-button');
+        const audioResponse = document.getElementById('audio-response');
+        const visualizer = document.getElementById('visualizer');
+        const statusElement = document.getElementById('status');
+        
+        // Audio recording variables
+        let mediaRecorder;
+        let audioChunks = [];
+        let audioContext;
+        let analyser;
+        
+        // Update status message
+        function updateStatus(message, isThinking = false) {
+            statusElement.textContent = message;
+            statusElement.className = isThinking ? 'status thinking' : 'status';
+        }
+        
+        // Add message to chat
+        function addMessage(role, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', `${role}-message`);
+            
+            // Format code blocks if detected
+            if (content.includes('```')) {
+                const parts = content.split('```');
+                parts.forEach((part, index) => {
+                    if (index % 2 === 1) { // Code block
+                        const code = document.createElement('pre');
+                        code.textContent = part;
+                        messageDiv.appendChild(code);
+                    } else { // Regular text
+                        messageDiv.appendChild(document.createTextNode(part));
+                    }
+                });
+            } else {
+                messageDiv.textContent = content;
+            }
+            
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+        
+        // Call LLM API
+        async function getLLMResponse(prompt) {
+            updateStatus("Thinking...", true);
+            try {
+                const response = await fetch(`${API_BASE_URL}/chat`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ prompt })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`API error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                return data.response;
+            } catch (error) {
+                console.error("LLM API error:", error);
+                return "Sorry, I encountered an error processing your request.";
+            } finally {
+                updateStatus("");
+            }
+        }
+        
+        // Convert text to speech
+        async function textToSpeech(text) {
+            updateStatus("Generating speech...", true);
+            try {
+                const response = await fetch(`${API_BASE_URL}/synthesize`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    'Accept': 'audio/mp3'
+                    },
+                    body: JSON.stringify({ text })
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`TTS API error: ${response.status}`);
+                }
+                
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                audioResponse.src = url;
+                audioResponse.play();
+            } catch (error) {
+                console.error("TTS error:", error);
+                // Fallback to browser TTS
+                if ('speechSynthesis' in window) {
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    window.speechSynthesis.speak(utterance);
+                }
+            } finally {
+                updateStatus("");
+            }
+        }
+        
+        // Transcribe audio
+        async function transcribeAudio(audioBlob) {
+            updateStatus("Transcribing audio...", true);
+            try {
+                const formData = new FormData();
+                formData.append('audio', audioBlob, 'recording.wav');
+                
+                const response = await fetch(`${API_BASE_URL}/transcribe`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`Transcription error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                return data.text;
+            } catch (error) {
+                console.error("Transcription error:", error);
+                return "Could not understand audio";
+            } finally {
+                updateStatus("");
+            }
+        }
+        
+        // Handle text input
+        async function handleTextInput() {
+            const text = userInput.value.trim();
+            if (!text) return;
+            
+            addMessage('user', text);
+            userInput.value = '';
+            
+            const response = await getLLMResponse(text);
+            addMessage('bot', response);
+            await textToSpeech(response);
+        }
+        
+        // Handle audio recording
+        recordButton.addEventListener('click', async () => {
+            try {
+                updateStatus("Preparing microphone...");
+                
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(stream);
+                
+                // Initialize audio context for visualization
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                const microphone = audioContext.createMediaStreamSource(stream);
+                microphone.connect(analyser);
+                
+                // Set up recording
+                mediaRecorder.ondataavailable = event => {
+                    audioChunks.push(event.data);
+                };
+                
+                mediaRecorder.onstop = async () => {
+                    updateStatus("Processing audio...");
+                    
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                    audioChunks = [];
+                    
+                    // Transcribe audio
+                    const transcription = await transcribeAudio(audioBlob);
+                    addMessage('user', transcription);
+                    
+                    // Get LLM response
+                    const response = await getLLMResponse(transcription);
+                    addMessage('bot', response);
+                    
+                    // Convert response to speech
+                    await textToSpeech(response);
+                    
+                    // Clean up
+                    stream.getTracks().forEach(track => track.stop());
+                };
+                
+                // Start recording
+                mediaRecorder.start();
+                recordButton.disabled = true;
+                stopButton.disabled = false;
+                updateStatus("Recording...");
+                
+                // Audio visualization
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                
+                function draw() {
+                    if (!analyser) return;
+                    
+                    requestAnimationFrame(draw);
+                    analyser.getByteTimeDomainData(dataArray);
+                    
+                    visualizer.innerHTML = '';
+                    for (let i = 0; i < bufferLength; i++) {
+                        const barHeight = dataArray[i] / 2;
+                        const bar = document.createElement('div');
+                        bar.style.display = 'inline-block';
+                        bar.style.width = '1px';
+                        bar.style.height = `${barHeight}px`;
+                        bar.style.backgroundColor = '#4285f4';
+                        bar.style.marginRight = '1px';
+                        visualizer.appendChild(bar);
+                    }
+                }
+                
+                draw();
+                
+            } catch (err) {
+                console.error("Error accessing microphone:", err);
+                updateStatus("Error accessing microphone. Please check permissions.", false);
+            }
+        });
+        
+        stopButton.addEventListener('click', () => {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+                recordButton.disabled = false;
+                stopButton.disabled = true;
+            }
+        });
+        
+        // Event listeners
+        sendButton.addEventListener('click', handleTextInput);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') handleTextInput();
+        });
+        
+        // Initial bot message
+        window.addEventListener('DOMContentLoaded', () => {
+            addMessage('bot', "Hello! I'm your AI assistant. You can type or speak to me.");
+        });
+    </script>
+</body>
+</html>
