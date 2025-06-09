@@ -1,6 +1,6 @@
-flask 
-pyttsx3 
-SpeechRecognition 
-transformers 
+flask
+pyttsx3
+SpeechRecognition
+transformers
 torch
 werkzeug
