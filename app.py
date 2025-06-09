@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 import pyttsx3
 import tempfile
 import os
@@ -19,12 +19,15 @@ ALLOWED_EXTENSIONS = {'wav', 'mp3', 'ogg'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+# Mandatory health check endpoint for Choreo
+@app.route('/health')
+def health_check():
+    return jsonify({"status": "healthy"}), 200
+
 def allowed_file(filename):
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def text_to_speech(text):
-    """Convert text to speech and return audio file path"""
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     engine.save_to_file(text, path)
@@ -32,7 +35,6 @@ def text_to_speech(text):
     return path
 
 def speech_to_text(audio_path):
-    """Convert speech to text using speech_recognition"""
     with sr.AudioFile(audio_path) as source:
         audio_data = recognizer.record(source)
         try:
@@ -43,13 +45,15 @@ def speech_to_text(audio_path):
             return "Speech recognition service unavailable"
 
 def get_llm_response(prompt):
-    """Generate response using local LLM"""
     result = generator(prompt, max_length=100, num_return_sequences=1)
     return result[0]["generated_text"]
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    data = request.json
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+        
+    data = request.get_json()
     prompt = data.get('prompt')
     
     if not prompt:
@@ -73,24 +77,25 @@ def transcribe():
         file.save(audio_path)
         
         text = speech_to_text(audio_path)
-        os.remove(audio_path)  # Clean up
-        
+        os.remove(audio_path)
         return jsonify({"text": text})
     
     return jsonify({"error": "Invalid file type"}), 400
 
 @app.route('/api/synthesize', methods=['POST'])
 def synthesize():
-    data = request.json
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+        
+    data = request.get_json()
     text = data.get('text')
     
     if not text:
         return jsonify({"error": "No text provided"}), 400
     
     audio_path = text_to_speech(text)
-    
-    # Return the audio file
-    return send_file(audio_path, mimetype='audio/mp3', as_attachment=True)
+    return send_file(audio_path, mimetype='audio/mp3')
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    port = int(os.environ.get('PORT', 5000))  # Choreo will provide PORT
+    app.run(host='0.0.0.0', port=port)
